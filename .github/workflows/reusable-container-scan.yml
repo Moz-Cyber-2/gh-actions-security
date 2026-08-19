@@ -1,0 +1,76 @@
+name: Container Image Scan (Trivy) — Reusable
+
+on:
+  workflow_call:
+    inputs:
+      image_tarball_artifact:
+        description: "Name of the artifact containing the exported docker image tarball"
+        required: true
+        type: string
+      image_name:
+        description: "Image name (used for display and SARIF report)"
+        required: true
+        type: string
+      severity:
+        description: "Comma-separated list of severities to scan for"
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+      fail_on_findings:
+        description: "Fail the workflow if vulnerabilities are found"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  trivy-scan:
+    name: Trivy — ${{ inputs.image_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Download image tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.image_tarball_artifact }}
+
+      - name: Run Trivy — table output (human readable)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          input: "${{ inputs.image_name }}.tar"
+          format: table
+          severity: ${{ inputs.severity }}
+          exit-code: "0"          # don't fail here — we fail explicitly below
+
+      - name: Run Trivy — SARIF output (GitHub Security tab)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          input: "${{ inputs.image_name }}.tar"
+          format: sarif
+          output: trivy-results.sarif
+          severity: ${{ inputs.severity }}
+          exit-code: "0"
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+      - name: Count findings
+        id: count
+        run: |
+          # Count rules (each rule = one CVE finding) in the SARIF
+          FINDINGS=$(jq '[.runs[].results[]] | length' trivy-results.sarif 2>/dev/null || echo "0")
+          echo "findings=${FINDINGS}" >> "$GITHUB_OUTPUT"
+          echo "Trivy found ${FINDINGS} finding(s) at severity ${{ inputs.severity }}"
+
+      - name: Fail on findings
+        if: inputs.fail_on_findings && steps.count.outputs.findings != '0'
+        run: |
+          echo "::error::Trivy found ${{ steps.count.outputs.findings }} CVE(s) at severity ${{ inputs.severity }}."
+          echo "::error::Review the findings in the Security tab → Code scanning alerts."
+          exit 1

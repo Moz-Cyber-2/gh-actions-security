@@ -1,0 +1,77 @@
+name: SAST — Semgrep (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: "Space-separated Semgrep rule configs (registry IDs or local paths)"
+        required: false
+        type: string
+        default: "p/owasp-top-ten p/nodejs p/secrets"
+      fail_on_findings:
+        description: "Fail the workflow if Semgrep finds issues"
+        required: false
+        type: boolean
+        default: true
+      paths:
+        description: "Paths to scan (space-separated, relative to repo root)"
+        required: false
+        type: string
+        default: "."
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    container:
+      image: semgrep/semgrep:latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep — text output (human readable)
+        run: |
+          semgrep scan \
+            --config ${{ inputs.config }} \
+            --error \
+            --verbose \
+            ${{ inputs.paths }} \
+            || SEMGREP_EXIT=$?
+
+          # Save exit code — we use it after uploading SARIF
+          echo "SEMGREP_EXIT=${SEMGREP_EXIT:-0}" >> "$GITHUB_ENV"
+
+      - name: Run Semgrep — SARIF output (GitHub Security tab)
+        if: always()
+        run: |
+          semgrep scan \
+            --config ${{ inputs.config }} \
+            --sarif \
+            --output semgrep-results.sarif \
+            ${{ inputs.paths }} || true   # don't fail here — SARIF must upload regardless
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep-sast
+
+      - name: Count findings
+        id: count
+        if: always()
+        run: |
+          FINDINGS=$(jq '[.runs[].results[]] | length' semgrep-results.sarif 2>/dev/null || echo "0")
+          echo "findings=${FINDINGS}" >> "$GITHUB_OUTPUT"
+          echo "Semgrep found ${FINDINGS} finding(s)"
+
+      - name: Fail on findings
+        if: inputs.fail_on_findings && env.SEMGREP_EXIT != '0'
+        run: |
+          echo "::error::Semgrep found ${{ steps.count.outputs.findings }} issue(s)."
+          echo "::error::Review findings in the Security tab → Code scanning alerts."
+          exit 1
