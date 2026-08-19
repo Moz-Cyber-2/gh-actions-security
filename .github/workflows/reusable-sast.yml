@@ -35,8 +35,12 @@ jobs:
 
       - name: Run Semgrep — text output (human readable)
         run: |
+          # Build multiple --config flags from space-separated input
+          CONFIGS=""
+          for c in ${{ inputs.config }}; do CONFIGS="$CONFIGS --config $c"; done
+
           semgrep scan \
-            --config ${{ inputs.config }} \
+            $CONFIGS \
             --error \
             --verbose \
             ${{ inputs.paths }} \
@@ -48,8 +52,12 @@ jobs:
       - name: Run Semgrep — SARIF output (GitHub Security tab)
         if: always()
         run: |
+          # Build multiple --config flags from space-separated input
+          CONFIGS=""
+          for c in ${{ inputs.config }}; do CONFIGS="$CONFIGS --config $c"; done
+
           semgrep scan \
-            --config ${{ inputs.config }} \
+            $CONFIGS \
             --sarif \
             --output semgrep-results.sarif \
             ${{ inputs.paths }} || true   # don't fail here — SARIF must upload regardless
