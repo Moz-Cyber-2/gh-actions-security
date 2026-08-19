@@ -17,7 +17,7 @@ Reusable GitHub Actions workflows for DevSecOps pipelines.
 ```yaml
 jobs:
   secrets:
-    uses: DEMO_ORG/security-gh-actions/.github/workflows/secrets-scan-pr.yaml@main
+    uses: moz-cyber/gh-actions-security/.github/workflows/secrets-scan-pr.yaml@main
     permissions:
       contents: read
       pull-requests: write
@@ -27,7 +27,7 @@ jobs:
 ```yaml
 jobs:
   sast:
-    uses: DEMO_ORG/security-gh-actions/.github/workflows/reusable-sast.yml@main
+    uses: moz-cyber/gh-actions-security/.github/workflows/reusable-sast.yml@main
     permissions:
       contents: read
       security-events: write
@@ -40,7 +40,7 @@ jobs:
 ```yaml
 jobs:
   container-scan:
-    uses: DEMO_ORG/security-gh-actions/.github/workflows/reusable-container-scan.yml@main
+    uses: moz-cyber/gh-actions-security/.github/workflows/reusable-container-scan.yml@main
     permissions:
       contents: read
       security-events: write
