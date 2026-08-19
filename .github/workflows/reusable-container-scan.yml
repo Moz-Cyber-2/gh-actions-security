@@ -24,7 +24,7 @@ on:
 
 jobs:
   trivy-scan:
-    name: Trivy — ${{ inputs.image_name }}
+    name: Trivy
     runs-on: ubuntu-latest
     permissions:
       contents: read

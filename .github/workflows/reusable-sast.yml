@@ -21,7 +21,7 @@ on:
 
 jobs:
   semgrep:
-    name: Semgrep SAST
+    name: Semgrep
     runs-on: ubuntu-latest
     permissions:
       contents: read
