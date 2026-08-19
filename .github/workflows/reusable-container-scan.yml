@@ -3,12 +3,8 @@ name: Container Image Scan (Trivy) — Reusable
 on:
   workflow_call:
     inputs:
-      image_tarball_artifact:
-        description: "Name of the artifact containing the exported docker image tarball"
-        required: true
-        type: string
-      image_name:
-        description: "Image name (used for display and SARIF report)"
+      image_ref:
+        description: "Full image reference as it appears in the local Podman store (name:tag)"
         required: true
         type: string
       severity:
@@ -25,52 +21,72 @@ on:
 jobs:
   trivy-scan:
     name: Trivy
-    runs-on: ubuntu-latest
+    runs-on: devsecops-demo
     permissions:
       contents: read
       security-events: write
 
     steps:
-      - name: Download image tarball
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.image_tarball_artifact }}
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          if command -v trivy &>/dev/null; then
+            echo "Trivy already installed: $(trivy --version | head -1)"
+            exit 0
+          fi
+          VERSION="0.58.2"
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)        TRV_ARCH="64bit" ;;
+            aarch64|arm64) TRV_ARCH="ARM64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+          esac
+          curl -sSL -o /tmp/trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_macOS-${TRV_ARCH}.tar.gz"
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Export image to tarball for Trivy
+        run: |
+          set -euo pipefail
+          podman save \
+            --format=docker-archive \
+            "${{ inputs.image_ref }}" \
+            -o /tmp/scan-image.tar
 
       - name: Run Trivy — table output (human readable)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          input: "${{ inputs.image_name }}.tar"
-          format: table
-          severity: ${{ inputs.severity }}
-          exit-code: "0"          # don't fail here — we fail explicitly below
+        run: |
+          trivy image \
+            --input /tmp/scan-image.tar \
+            --severity "${{ inputs.severity }}" \
+            --exit-code 0 \
+            --no-progress
 
       - name: Run Trivy — SARIF output (GitHub Security tab)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          input: "${{ inputs.image_name }}.tar"
-          format: sarif
-          output: trivy-results.sarif
-          severity: ${{ inputs.severity }}
-          exit-code: "0"
+        run: |
+          trivy image \
+            --input /tmp/scan-image.tar \
+            --severity "${{ inputs.severity }}" \
+            --format sarif \
+            --output /tmp/trivy-results.sarif \
+            --exit-code 0 \
+            --no-progress
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: /tmp/trivy-results.sarif
           category: trivy-container
 
-      - name: Count findings
-        id: count
+      - name: Count findings and fail
         run: |
-          # Count rules (each rule = one CVE finding) in the SARIF
-          FINDINGS=$(jq '[.runs[].results[]] | length' trivy-results.sarif 2>/dev/null || echo "0")
-          echo "findings=${FINDINGS}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          FINDINGS=$(jq '[.runs[].results[]] | length' /tmp/trivy-results.sarif 2>/dev/null || echo "0")
           echo "Trivy found ${FINDINGS} finding(s) at severity ${{ inputs.severity }}"
-
-      - name: Fail on findings
-        if: inputs.fail_on_findings && steps.count.outputs.findings != '0'
-        run: |
-          echo "::error::Trivy found ${{ steps.count.outputs.findings }} CVE(s) at severity ${{ inputs.severity }}."
-          echo "::error::Review the findings in the Security tab → Code scanning alerts."
-          exit 1
+          rm -f /tmp/scan-image.tar /tmp/trivy-results.sarif
+          if [[ "${{ inputs.fail_on_findings }}" == "true" && "$FINDINGS" != "0" ]]; then
+            echo "::error::Trivy found ${FINDINGS} CVE(s) at severity ${{ inputs.severity }}. Review Security tab → Code scanning alerts."
+            exit 1
+          fi
