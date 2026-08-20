@@ -93,7 +93,7 @@ jobs:
             echo "No SARIF file found — skipping upload"
             exit 0
           fi
-          curl -s -o /dev/null -w "%{http_code}" -X POST "${DD_URL}/api/v2/import-scan/" \
+          curl -s -m 120 -o /dev/null -w "%{http_code}" -X POST "${DD_URL}/api/v2/import-scan/" \
             -H "Authorization: Token ${DD_API_TOKEN}" \
             -F "scan_type=SARIF" \
             -F "engagement=${DD_ENGAGEMENT_ID}" \
