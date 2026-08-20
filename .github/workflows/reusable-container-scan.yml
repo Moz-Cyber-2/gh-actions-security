@@ -110,6 +110,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          SEVERITY: ${{ inputs.severity }}
         run: |
           if [[ -z "$PR_NUMBER" ]]; then
             echo "Not a PR context — skipping comment"
@@ -119,8 +121,10 @@ jobs:
             echo "No SARIF file — skipping comment"
             exit 0
           fi
-          python3 - << 'PYEOF' > /tmp/trivy-table.md
-          import json, collections
+          python3 - << 'PYEOF'
+          import json, collections, os
+          image_ref = os.environ["IMAGE_REF"]
+          severity = os.environ["SEVERITY"]
           with open("/tmp/trivy-results.sarif") as f:
               sarif = json.load(f)
           order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
@@ -134,36 +138,32 @@ jobs:
                   counter[sev] += 1
           total = sum(counter.values())
           if total == 0:
-              print("NO_FINDINGS")
+              open("/tmp/trivy-comment.md", "w").write("NO_FINDINGS")
           else:
-              print(f"TOTAL={total}")
-              print("| Severity | Count |")
-              print("|---|---|")
-              for sev in order:
-                  if counter[sev]:
-                      print(f"| {sev} | {counter[sev]} |")
+              table = "| Severity | Count |\n|---|---|\n"
+              table += "\n".join(f"| {s} | {counter[s]} |" for s in order if counter[s])
+              body = (
+                  f"## :shield: Trivy Container Scan — {total} Vulnerability/ies\n\n"
+                  f"**Image:** `{image_ref}` | **Severities scanned:** `{severity}`\n\n"
+                  f"{table}\n\n"
+                  f"Review all findings in the **Security tab \u2192 Code scanning alerts**."
+              )
+              with open("/tmp/trivy-comment.md", "w") as f:
+                  f.write(body)
           PYEOF
-          if grep -q "^NO_FINDINGS" /tmp/trivy-table.md; then
+          if grep -q "^NO_FINDINGS" /tmp/trivy-comment.md 2>/dev/null; then
             echo "No findings — skipping label/comment"
-            rm -f /tmp/trivy-table.md
+            rm -f /tmp/trivy-comment.md
             exit 0
           fi
-          TOTAL=$(grep '^TOTAL=' /tmp/trivy-table.md | cut -d= -f2)
-          TABLE=$(grep -v '^TOTAL=' /tmp/trivy-table.md)
           REPO="${{ github.repository }}"
           gh label create "security: container-vulns" \
             --color "D93F0B" \
             --description "Container vulnerabilities detected by Trivy" \
             --repo "$REPO" 2>/dev/null || true
           gh pr edit "$PR_NUMBER" --add-label "security: container-vulns" --repo "$REPO" || true
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "## :shield: Trivy Container Scan — ${TOTAL} Vulnerability/ies
-
-**Image:** \`${{ inputs.image_ref }}\` | **Severities scanned:** \`${{ inputs.severity }}\`
-
-${TABLE}
-
-Review all findings in the **Security tab → Code scanning alerts**."
-          rm -f /tmp/trivy-table.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/trivy-comment.md
+          rm -f /tmp/trivy-comment.md
 
       - name: Count findings and fail
         run: |

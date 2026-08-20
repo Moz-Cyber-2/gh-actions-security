@@ -107,6 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          FINDINGS_COUNT: ${{ steps.count.outputs.findings }}
         run: |
           if [[ -z "$PR_NUMBER" ]]; then
             echo "Not a PR context — skipping comment"
@@ -118,8 +119,9 @@ jobs:
             --description "SAST issues detected by Semgrep" \
             --repo "$REPO" 2>/dev/null || true
           gh pr edit "$PR_NUMBER" --add-label "security: sast-findings" --repo "$REPO" || true
-          python3 - << 'PYEOF' > /tmp/sg-table.md
-          import json
+          python3 - << 'PYEOF'
+          import json, os
+          count = os.environ["FINDINGS_COUNT"]
           rows = []
           with open("semgrep-results.sarif") as f:
               sarif = json.load(f)
@@ -132,21 +134,19 @@ jobs:
                       uri = pl.get("artifactLocation", {}).get("uri", "")
                       line = pl.get("region", {}).get("startLine", "")
                       rows.append(f"| `{rule_id}` | {level} | `{uri}:{line}` |")
-          print("| Rule | Level | Location |")
-          print("|---|---|---|")
-          for row in rows[:20]:
-              print(row)
+          table = "| Rule | Level | Location |\n|---|---|---|\n" + "\n".join(rows[:20])
           if len(rows) > 20:
-              print(f"\n_...and {len(rows)-20} more. See Security tab for full list._")
+              table += f"\n\n_...and {len(rows)-20} more. See Security tab for full list._"
+          body = (
+              f"## :warning: Semgrep SAST — {count} Finding(s)\n\n"
+              f"{table}\n\n"
+              f"Review all findings in the **Security tab \u2192 Code scanning alerts**."
+          )
+          with open("/tmp/sg-comment.md", "w") as f:
+              f.write(body)
           PYEOF
-          TABLE=$(cat /tmp/sg-table.md)
-          FINDINGS="${{ steps.count.outputs.findings }}"
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "## :warning: Semgrep SAST — ${FINDINGS} Finding(s)
-
-${TABLE}
-
-Review all findings in the **Security tab → Code scanning alerts**."
-          rm -f /tmp/sg-table.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/sg-comment.md
+          rm -f /tmp/sg-comment.md
 
       - name: Fail on findings
         if: inputs.fail_on_findings && env.SEMGREP_EXIT != '0'
