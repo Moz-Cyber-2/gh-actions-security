@@ -22,45 +22,45 @@ on:
 jobs:
   semgrep:
     name: Semgrep
-    runs-on: ubuntu-latest
+    runs-on: devsecops-demo
     permissions:
       contents: read
       security-events: write
 
-    container:
-      image: semgrep/semgrep:latest
-
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Semgrep
+        run: |
+          set -euo pipefail
+          if command -v semgrep &>/dev/null; then
+            echo "Semgrep already installed: $(semgrep --version)"
+          else
+            pip3 install semgrep --quiet
+          fi
+          semgrep --version
+
       - name: Run Semgrep — text output (human readable)
         run: |
-          # Build multiple --config flags from space-separated input
           CONFIGS=""
           for c in ${{ inputs.config }}; do CONFIGS="$CONFIGS --config $c"; done
-
           semgrep scan \
             $CONFIGS \
             --error \
-            --verbose \
             ${{ inputs.paths }} \
             || SEMGREP_EXIT=$?
-
-          # Save exit code — we use it after uploading SARIF
           echo "SEMGREP_EXIT=${SEMGREP_EXIT:-0}" >> "$GITHUB_ENV"
 
-      - name: Run Semgrep — SARIF output (GitHub Security tab)
+      - name: Run Semgrep — SARIF output
         if: always()
         run: |
-          # Build multiple --config flags from space-separated input
           CONFIGS=""
           for c in ${{ inputs.config }}; do CONFIGS="$CONFIGS --config $c"; done
-
           semgrep scan \
             $CONFIGS \
             --sarif \
             --output semgrep-results.sarif \
-            ${{ inputs.paths }} || true   # don't fail here — SARIF must upload regardless
+            ${{ inputs.paths }} || true
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
@@ -76,6 +76,30 @@ jobs:
           FINDINGS=$(jq '[.runs[].results[]] | length' semgrep-results.sarif 2>/dev/null || echo "0")
           echo "findings=${FINDINGS}" >> "$GITHUB_OUTPUT"
           echo "Semgrep found ${FINDINGS} finding(s)"
+
+      - name: Upload findings to DefectDojo
+        if: always()
+        env:
+          DD_API_TOKEN: ${{ secrets.DD_API_TOKEN }}
+          DD_URL: ${{ secrets.DD_URL }}
+          DD_ENGAGEMENT_ID: ${{ secrets.DD_ENGAGEMENT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DD_API_TOKEN:-}" || -z "${DD_URL:-}" ]]; then
+            echo "DefectDojo secrets not configured — skipping upload"
+            exit 0
+          fi
+          if [[ ! -f semgrep-results.sarif ]]; then
+            echo "No SARIF file found — skipping upload"
+            exit 0
+          fi
+          curl -s -o /dev/null -w "%{http_code}" -X POST "${DD_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DD_API_TOKEN}" \
+            -F "scan_type=SARIF" \
+            -F "engagement=${DD_ENGAGEMENT_ID}" \
+            -F "file=@semgrep-results.sarif" \
+            -F "active=true" \
+            -F "verified=false" | grep -qE "^2" && echo "DefectDojo upload successful" || echo "DefectDojo upload failed (non-blocking)"
 
       - name: Fail on findings
         if: inputs.fail_on_findings && env.SEMGREP_EXIT != '0'

@@ -80,12 +80,47 @@ jobs:
           sarif_file: /tmp/trivy-results.sarif
           category: trivy-container
 
+      - name: Run Trivy — JSON output (DefectDojo upload)
+        if: always()
+        run: |
+          trivy image \
+            --input /tmp/scan-image.tar \
+            --severity "${{ inputs.severity }}" \
+            --format json \
+            --output /tmp/trivy-results.json \
+            --exit-code 0 \
+            --no-progress || true
+
+      - name: Upload findings to DefectDojo
+        if: always()
+        env:
+          DD_API_TOKEN: ${{ secrets.DD_API_TOKEN }}
+          DD_URL: ${{ secrets.DD_URL }}
+          DD_ENGAGEMENT_ID: ${{ secrets.DD_ENGAGEMENT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DD_API_TOKEN:-}" || -z "${DD_URL:-}" ]]; then
+            echo "DefectDojo secrets not configured — skipping upload"
+            exit 0
+          fi
+          if [[ ! -f /tmp/trivy-results.json ]]; then
+            echo "No Trivy JSON found — skipping upload"
+            exit 0
+          fi
+          curl -s -o /dev/null -w "%{http_code}" -X POST "${DD_URL}/api/v2/import-scan/" \
+            -H "Authorization: Token ${DD_API_TOKEN}" \
+            -F "scan_type=Trivy Scan" \
+            -F "engagement=${DD_ENGAGEMENT_ID}" \
+            -F "file=@/tmp/trivy-results.json" \
+            -F "active=true" \
+            -F "verified=false" | grep -qE "^2" && echo "DefectDojo upload successful" || echo "DefectDojo upload failed (non-blocking)"
+
       - name: Count findings and fail
         run: |
           set -euo pipefail
           FINDINGS=$(jq '[.runs[].results[]] | length' /tmp/trivy-results.sarif 2>/dev/null || echo "0")
           echo "Trivy found ${FINDINGS} finding(s) at severity ${{ inputs.severity }}"
-          rm -f /tmp/scan-image.tar /tmp/trivy-results.sarif
+          rm -f /tmp/scan-image.tar /tmp/trivy-results.sarif /tmp/trivy-results.json
           if [[ "${{ inputs.fail_on_findings }}" == "true" && "$FINDINGS" != "0" ]]; then
             echo "::error::Trivy found ${FINDINGS} CVE(s) at severity ${{ inputs.severity }}. Review Security tab → Code scanning alerts."
             exit 1
