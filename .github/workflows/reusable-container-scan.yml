@@ -25,6 +25,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      pull-requests: write
 
     steps:
       - name: Install Trivy
@@ -103,6 +104,66 @@ jobs:
             -F "file=@/tmp/trivy-results.sarif" \
             -F "active=true" \
             -F "verified=false" | grep -qE "^2" && echo "DefectDojo upload successful" || echo "DefectDojo upload failed (non-blocking)"
+
+      - name: Post PR comment and label (container)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+          SEVERITY: ${{ inputs.severity }}
+        run: |
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "Not a PR context — skipping comment"
+            exit 0
+          fi
+          if [[ ! -f /tmp/trivy-results.sarif ]]; then
+            echo "No SARIF file — skipping comment"
+            exit 0
+          fi
+          python3 - << 'PYEOF'
+          import json, collections, os
+          image_ref = os.environ["IMAGE_REF"]
+          severity = os.environ["SEVERITY"]
+          with open("/tmp/trivy-results.sarif") as f:
+              sarif = json.load(f)
+          order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+          counter = collections.Counter()
+          for run in sarif.get("runs", []):
+              rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+              for result in run.get("results", []):
+                  rid = result.get("ruleId", "")
+                  tags = rules.get(rid, {}).get("properties", {}).get("tags", [])
+                  sev = next((t for t in order if t in tags), "UNKNOWN")
+                  counter[sev] += 1
+          total = sum(counter.values())
+          if total == 0:
+              open("/tmp/trivy-comment.md", "w").write("NO_FINDINGS")
+          else:
+              table = "| Severity | Count |\n|---|---|\n"
+              table += "\n".join(f"| {s} | {counter[s]} |" for s in order if counter[s])
+              body = (
+                  f"## :shield: Trivy Container Scan — {total} Vulnerability/ies\n\n"
+                  f"**Image:** `{image_ref}` | **Severities scanned:** `{severity}`\n\n"
+                  f"{table}\n\n"
+                  f"Review all findings in the **Security tab \u2192 Code scanning alerts**."
+              )
+              with open("/tmp/trivy-comment.md", "w") as f:
+                  f.write(body)
+          PYEOF
+          if grep -q "^NO_FINDINGS" /tmp/trivy-comment.md 2>/dev/null; then
+            echo "No findings — skipping label/comment"
+            rm -f /tmp/trivy-comment.md
+            exit 0
+          fi
+          REPO="${{ github.repository }}"
+          gh label create "security: container-vulns" \
+            --color "D93F0B" \
+            --description "Container vulnerabilities detected by Trivy" \
+            --repo "$REPO" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label "security: container-vulns" --repo "$REPO" || true
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/trivy-comment.md
+          rm -f /tmp/trivy-comment.md
 
       - name: Count findings and fail
         run: |

@@ -26,6 +26,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +101,52 @@ jobs:
             -F "file=@semgrep-results.sarif" \
             -F "active=true" \
             -F "verified=false" | grep -qE "^2" && echo "DefectDojo upload successful" || echo "DefectDojo upload failed (non-blocking)"
+
+      - name: Post PR comment and label (SAST)
+        if: always() && steps.count.outputs.findings != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FINDINGS_COUNT: ${{ steps.count.outputs.findings }}
+        run: |
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "Not a PR context — skipping comment"
+            exit 0
+          fi
+          REPO="${{ github.repository }}"
+          gh label create "security: sast-findings" \
+            --color "E4E669" \
+            --description "SAST issues detected by Semgrep" \
+            --repo "$REPO" 2>/dev/null || true
+          gh pr edit "$PR_NUMBER" --add-label "security: sast-findings" --repo "$REPO" || true
+          python3 - << 'PYEOF'
+          import json, os
+          count = os.environ["FINDINGS_COUNT"]
+          rows = []
+          with open("semgrep-results.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif.get("runs", []):
+              for result in run.get("results", []):
+                  rule_id = result.get("ruleId", "")
+                  level = result.get("level", "warning")
+                  for loc in result.get("locations", []):
+                      pl = loc.get("physicalLocation", {})
+                      uri = pl.get("artifactLocation", {}).get("uri", "")
+                      line = pl.get("region", {}).get("startLine", "")
+                      rows.append(f"| `{rule_id}` | {level} | `{uri}:{line}` |")
+          table = "| Rule | Level | Location |\n|---|---|---|\n" + "\n".join(rows[:20])
+          if len(rows) > 20:
+              table += f"\n\n_...and {len(rows)-20} more. See Security tab for full list._"
+          body = (
+              f"## :warning: Semgrep SAST — {count} Finding(s)\n\n"
+              f"{table}\n\n"
+              f"Review all findings in the **Security tab \u2192 Code scanning alerts**."
+          )
+          with open("/tmp/sg-comment.md", "w") as f:
+              f.write(body)
+          PYEOF
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/sg-comment.md
+          rm -f /tmp/sg-comment.md
 
       - name: Fail on findings
         if: inputs.fail_on_findings && env.SEMGREP_EXIT != '0'
