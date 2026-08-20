@@ -1,0 +1,8 @@
+# Custom TruffleHog detector for DevSecOps demo
+# Detects the placeholder string used to simulate a hardcoded secret
+detectors:
+  - name: DemoHardcodedSecret
+    keywords:
+      - secret-found-placeholder
+    regex:
+      secret: 'secret-found-placeholder'
